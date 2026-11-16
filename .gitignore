@@ -53,3 +53,6 @@ crashlytics-build.properties
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Servidor MCP local (dependencias npm)
+unity-mcp/node_modules/
