@@ -42,6 +42,7 @@ public class RobotTeacher : MonoBehaviour
         if (antennaBulb)
         {
             float pulse = 1.5f + Mathf.Sin(t * 3f);
+            if (block == null) block = new MaterialPropertyBlock();
             antennaBulb.GetPropertyBlock(block);
             block.SetColor("_EmissionColor", new Color(1f, 0.35f, 0.2f) * pulse);
             antennaBulb.SetPropertyBlock(block);
