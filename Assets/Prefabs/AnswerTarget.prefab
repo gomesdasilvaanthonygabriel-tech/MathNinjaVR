@@ -186,11 +186,13 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: ffa6a7890b6a63b40b6c2976833eb3ab, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::AnswerTarget
+  kind: 0
   value: 0
   isCorrect: 0
   radius: 0.22
   label: {fileID: 7436185439679788582}
   bodyRenderer: {fileID: 2708710057494751030}
+  explosionMaterial: {fileID: 0}
   gravityScale: 0.7
   lifetime: 6
   labelOffset: 0.27

@@ -1,18 +1,46 @@
+using System;
 using System.Collections.Generic;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.Rendering.Universal;
 using UnityEngine.SceneManagement;
+using Object = UnityEngine.Object;
 
 /// <summary>
-/// Monta a sala de aula 3D com o professor robo, o quadro e o lancador de esferas.
-/// Menu: MathNinja/Build Classroom (pode ser rodado de novo: reconstroi tudo).
+/// Monta a cena Game do zero: sala de aula 3D, professor robo, quadro, prefabs de esfera e
+/// granada, gameplay (pontuacao, lancador, lamina, fluxo) e UI.
+/// Menu: MathNinja/Build Classroom. Batch: -executeMethod ClassroomBuilder.BuildFromCommandLine
 /// </summary>
 public static class ClassroomBuilder
 {
-    const float RoomW = 10f;   // x
-    const float RoomD = 10f;   // z
-    const float RoomH = 3.5f;  // y
+    // ---------------------------------------------------------------- dimensoes (tudo deriva daqui)
+    const float RoomW = 16f;    // largura (x)
+    const float RoomD = 14f;    // profundidade (z); quadro na parede +z
+    const float RoomH = 4.2f;   // altura (y)
+    const float WallT = 0.2f;   // espessura das paredes
+
+    const float AisleW = 4.4f;          // corredor central (tapete) onde as esferas voam
+    const int DeskColsPerSide = 3;
+    const int DeskRows = 5;
+    const float DeskColSpacing = 1.4f;
+    const float DeskRowSpacing = 1.6f;
+    const float DeskFrontGap = 3.8f;    // distancia da parede do quadro ate a 1a fileira
+
+    const float BoardW = 6.0f;
+    const float BoardH = 2.0f;
+    const float BoardCenterY = 2.15f;
+
+    const int WindowCount = 4;
+    const int PosterCount = 4;
+    const int LightCols = 3;
+    const int LightRows = 3;
+
+    const float CamY = 1.75f;
+    const float CamZ = -0.5f;
+    const float SpawnDistance = 2.6f;   // distancia camera -> linha de lancamento
+    const float SpawnY = 0.35f;
+
     const string MatDir = "Assets/Materials";
     const string PrefabDir = "Assets/Prefabs";
     const string ScenePath = "Assets/Scenes/Game.unity";
@@ -23,17 +51,36 @@ public static class ClassroomBuilder
     [MenuItem("MathNinja/Build Classroom")]
     public static void Build()
     {
+        if (!Application.isBatchMode && !EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()) return;
+        BuildScene();
+    }
+
+    /// <summary>Para batch mode: reconstroi e salva Game.unity e encerra o Editor (0 = ok, 1 = erro).</summary>
+    public static void BuildFromCommandLine()
+    {
+        int code = 0;
+        try
+        {
+            BuildScene();
+        }
+        catch (Exception e)
+        {
+            Debug.LogException(e);
+            code = 1;
+        }
+        if (Application.isBatchMode) EditorApplication.Exit(code);
+    }
+
+    static void BuildScene()
+    {
         mats.Clear();
         font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-        EnsureFolder("Assets/Materials");
-        EnsureFolder("Assets/Prefabs");
+        EnsureFolder(MatDir);
+        EnsureFolder(PrefabDir);
         EnsureFolder("Assets/Scenes");
 
-        foreach (string n in new[] { "Classroom", "Gameplay" })
-        {
-            var old = GameObject.Find(n);
-            if (old != null) Object.DestroyImmediate(old);
-        }
+        // cena nova e vazia: nada residual (tester, objetos vazios) e recriado
+        var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
         var root = new GameObject("Classroom").transform;
         var structure = Group("Structure", root);
@@ -42,20 +89,35 @@ public static class ClassroomBuilder
         var lights = Group("Lights", root);
 
         BuildStructure(structure);
-        BuildBoard(decor, out TextMesh questionText, out TextMesh scoreText, out TextMesh feedbackText);
+        BuildBoard(decor, out TextMesh questionText, out TextMesh feedbackText);
         BuildFurniture(furniture);
         BuildDecor(decor);
         BuildLights(lights);
         BuildRobot(root);
 
-        AnswerTarget prefab = BuildAnswerPrefab();
-        BuildSpawner(prefab, questionText, scoreText, feedbackText);
-        SetupCameraAndAmbient();
+        Camera cam = BuildCameraAndAmbient();
 
-        EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
-        EditorSceneManager.SaveScene(SceneManager.GetActiveScene(), ScenePath);
+        var bounce = BuildBounceMaterial();
+        AnswerTarget answerPrefab = BuildAnswerPrefab(bounce);
+        AnswerTarget grenadePrefab = BuildGrenadePrefab(bounce);
+        BuildGameplay(answerPrefab, grenadePrefab, questionText, feedbackText, cam);
+
+        EditorSceneManager.MarkSceneDirty(scene);
+        if (!EditorSceneManager.SaveScene(scene, ScenePath))
+            throw new Exception("Falha ao salvar " + ScenePath);
         AssetDatabase.SaveAssets();
+        EnsureSceneInBuild();
         Debug.Log("[MathNinja] Sala de aula construida e salva em " + ScenePath);
+    }
+
+    static void EnsureSceneInBuild()
+    {
+        var list = new List<EditorBuildSettingsScene>(EditorBuildSettings.scenes);
+        int idx = list.FindIndex(s => s.path == ScenePath);
+        if (idx == 0 && list[0].enabled) return;
+        if (idx >= 0) list.RemoveAt(idx);
+        list.Insert(0, new EditorBuildSettingsScene(ScenePath, true));
+        EditorBuildSettings.scenes = list.ToArray();
     }
 
     // ---------------------------------------------------------------- estrutura
@@ -69,15 +131,16 @@ public static class ClassroomBuilder
         var ceilM = Mat("Ceiling", new Color(0.95f, 0.95f, 0.95f), 0f, 0.05f);
 
         float hw = RoomW / 2f, hd = RoomD / 2f;
+        float outerW = RoomW + 2f * WallT, outerD = RoomD + 2f * WallT;
 
-        Box("Floor", p, new Vector3(0, -0.05f, 0), new Vector3(RoomW + 0.4f, 0.1f, RoomD + 0.4f), floorM);
-        Box("Carpet", p, new Vector3(0, 0.006f, 0), new Vector3(3.6f, 0.012f, RoomD - 0.4f), carpetM, false);
-        Box("Ceiling", p, new Vector3(0, RoomH + 0.05f, 0), new Vector3(RoomW + 0.4f, 0.1f, RoomD + 0.4f), ceilM);
+        Box("Floor", p, new Vector3(0, -0.05f, 0), new Vector3(outerW, 0.1f, outerD), floorM);
+        Box("Carpet", p, new Vector3(0, 0.006f, 0), new Vector3(AisleW, 0.012f, RoomD - 0.4f), carpetM, false);
+        Box("Ceiling", p, new Vector3(0, RoomH + 0.05f, 0), new Vector3(outerW, 0.1f, outerD), ceilM);
 
-        Box("Wall_Front", p, new Vector3(0, RoomH / 2f, hd + 0.1f), new Vector3(RoomW + 0.4f, RoomH, 0.2f), wallM);
-        Box("Wall_Back", p, new Vector3(0, RoomH / 2f, -hd - 0.1f), new Vector3(RoomW + 0.4f, RoomH, 0.2f), wallM);
-        Box("Wall_Left", p, new Vector3(-hw - 0.1f, RoomH / 2f, 0), new Vector3(0.2f, RoomH, RoomD + 0.4f), wallM);
-        Box("Wall_Right", p, new Vector3(hw + 0.1f, RoomH / 2f, 0), new Vector3(0.2f, RoomH, RoomD + 0.4f), wallM);
+        Box("Wall_Front", p, new Vector3(0, RoomH / 2f, hd + WallT / 2f), new Vector3(outerW, RoomH, WallT), wallM);
+        Box("Wall_Back", p, new Vector3(0, RoomH / 2f, -hd - WallT / 2f), new Vector3(outerW, RoomH, WallT), wallM);
+        Box("Wall_Left", p, new Vector3(-hw - WallT / 2f, RoomH / 2f, 0), new Vector3(WallT, RoomH, outerD), wallM);
+        Box("Wall_Right", p, new Vector3(hw + WallT / 2f, RoomH / 2f, 0), new Vector3(WallT, RoomH, outerD), wallM);
 
         float bandH = 1.0f;
         Box("Band_Front", p, new Vector3(0, bandH / 2f, hd - 0.02f), new Vector3(RoomW, bandH, 0.04f), bandM, false);
@@ -88,27 +151,28 @@ public static class ClassroomBuilder
 
     // ---------------------------------------------------------------- quadro
 
-    static void BuildBoard(Transform p, out TextMesh questionText, out TextMesh scoreText, out TextMesh feedbackText)
+    static void BuildBoard(Transform p, out TextMesh questionText, out TextMesh feedbackText)
     {
         var frameM = Mat("Board_Frame", new Color(0.42f, 0.27f, 0.14f), 0f, 0.3f);
         var boardM = Mat("Board_Green", new Color(0.09f, 0.24f, 0.19f), 0f, 0.05f);
         var chalkM = Mat("Chalk_White", new Color(0.95f, 0.95f, 0.92f), 0f, 0.05f);
 
         float z = RoomD / 2f;
-        var board = Group("Blackboard", p);
-        Box("Frame", board, new Vector3(0, 1.75f, z - 0.04f), new Vector3(4.7f, 1.7f, 0.08f), frameM);
-        Box("Surface", board, new Vector3(0, 1.75f, z - 0.085f), new Vector3(4.5f, 1.5f, 0.02f), boardM, false);
-        Box("ChalkTray", board, new Vector3(0, 0.88f, z - 0.1f), new Vector3(4.5f, 0.05f, 0.12f), frameM, false);
-        Box("Chalk_A", board, new Vector3(-1.2f, 0.92f, z - 0.1f), new Vector3(0.1f, 0.02f, 0.02f), chalkM, false);
-        Box("Chalk_B", board, new Vector3(-1.0f, 0.92f, z - 0.1f), new Vector3(0.08f, 0.02f, 0.02f), chalkM, false);
+        float bottom = BoardCenterY - BoardH / 2f, top = BoardCenterY + BoardH / 2f;
+        float textX = 0.5f; // levemente a direita: o robo fica a esquerda
 
-        Text("BoardTitle", board, new Vector3(0.45f, 2.28f, z - 0.1f), Vector3.zero, "Math Ninja", 0.17f,
+        var board = Group("Blackboard", p);
+        Box("Frame", board, new Vector3(0, BoardCenterY, z - 0.04f), new Vector3(BoardW + 0.2f, BoardH + 0.2f, 0.08f), frameM);
+        Box("Surface", board, new Vector3(0, BoardCenterY, z - 0.085f), new Vector3(BoardW, BoardH, 0.02f), boardM, false);
+        Box("ChalkTray", board, new Vector3(0, bottom - 0.12f, z - 0.1f), new Vector3(BoardW, 0.05f, 0.12f), frameM, false);
+        Box("Chalk_A", board, new Vector3(-BoardW * 0.25f, bottom - 0.08f, z - 0.1f), new Vector3(0.1f, 0.02f, 0.02f), chalkM, false);
+        Box("Chalk_B", board, new Vector3(-BoardW * 0.25f + 0.2f, bottom - 0.08f, z - 0.1f), new Vector3(0.08f, 0.02f, 0.02f), chalkM, false);
+
+        Text("BoardTitle", board, new Vector3(textX, top - 0.28f, z - 0.1f), Vector3.zero, "Math Ninja", 0.22f,
             new Color(0.9f, 0.95f, 0.8f), TextAnchor.MiddleCenter);
-        questionText = Text("QuestionText", board, new Vector3(0.45f, 1.7f, z - 0.1f), Vector3.zero, "7 × 8 = ?", 0.5f,
+        questionText = Text("QuestionText", board, new Vector3(textX, BoardCenterY - 0.05f, z - 0.1f), Vector3.zero, "", 0.65f,
             Color.white, TextAnchor.MiddleCenter);
-        scoreText = Text("ScoreText", board, new Vector3(1.7f, 2.28f, z - 0.1f), Vector3.zero, "Pontos: 0", 0.15f,
-            new Color(1f, 0.9f, 0.4f), TextAnchor.MiddleCenter);
-        feedbackText = Text("FeedbackText", board, new Vector3(0.45f, 1.2f, z - 0.1f), Vector3.zero, "", 0.17f,
+        feedbackText = Text("FeedbackText", board, new Vector3(textX, bottom + 0.3f, z - 0.1f), Vector3.zero, "", 0.22f,
             new Color(0.7f, 1f, 0.7f), TextAnchor.MiddleCenter);
     }
 
@@ -124,17 +188,22 @@ public static class ClassroomBuilder
             Mat("Chair_Orange", new Color(0.95f, 0.55f, 0.15f), 0f, 0.3f)
         };
 
-        float[] cols = { -3.9f, -2.7f, 2.7f, 3.9f };
-        float[] rows = { -3.4f, -2.1f, -0.8f, 0.5f };
+        // colunas dos dois lados do corredor; fileiras a partir da frente (quadro) para tras
+        float firstX = AisleW / 2f + 0.7f;
+        float frontZ = RoomD / 2f - DeskFrontGap;
         int idx = 0;
-        foreach (float x in cols)
-            foreach (float z in rows)
-            {
-                Desk(p, "StudentDesk_" + idx, new Vector3(x, 0, z), 0f, woodM, metalM, chairColors[idx % 2], true);
-                idx++;
-            }
+        for (int side = -1; side <= 1; side += 2)
+            for (int c = 0; c < DeskColsPerSide; c++)
+                for (int r = 0; r < DeskRows; r++)
+                {
+                    float x = side * (firstX + c * DeskColSpacing);
+                    float z = frontZ - r * DeskRowSpacing;
+                    Desk(p, "StudentDesk_" + idx, new Vector3(x, 0, z), 0f, woodM, metalM, chairColors[idx % 2], true);
+                    idx++;
+                }
 
-        Desk(p, "TeacherDesk", new Vector3(3.6f, 0, 4.0f), 180f, woodM, metalM, chairColors[0], false, 1.8f);
+        Desk(p, "TeacherDesk", new Vector3(BoardW / 2f + 1.0f, 0, RoomD / 2f - 1.2f), 180f, woodM, metalM,
+            chairColors[0], false, 1.8f);
     }
 
     static void Desk(Transform parent, string name, Vector3 pos, float yaw, Material wood, Material metal,
@@ -171,43 +240,50 @@ public static class ClassroomBuilder
         var whiteM = Mat("Clock_Face", new Color(0.97f, 0.97f, 0.95f), 0f, 0.5f);
 
         float hw = RoomW / 2f, hd = RoomD / 2f;
+        float wallMidY = RoomH * 0.48f;
 
-        foreach (float z in new[] { -2.8f, 0f, 2.8f })
+        // janelas: parede esquerda, distribuidas pela profundidade
+        float winH = Mathf.Min(1.7f, RoomH * 0.4f), winW = Mathf.Min(2.0f, RoomD / WindowCount * 0.6f);
+        for (int i = 0; i < WindowCount; i++)
         {
-            var w = Group("Window", p);
-            w.localPosition = new Vector3(-hw + 0.04f, 1.9f, z);
-            Box("Frame", w, Vector3.zero, new Vector3(0.06f, 1.5f, 1.7f), frameM, false);
-            Box("Glass", w, new Vector3(0.02f, 0, 0), new Vector3(0.04f, 1.36f, 1.56f), glassM, false);
-            Box("BarV", w, new Vector3(0.04f, 0, 0), new Vector3(0.04f, 1.4f, 0.05f), frameM, false);
-            Box("BarH", w, new Vector3(0.04f, 0, 0), new Vector3(0.04f, 0.05f, 1.6f), frameM, false);
-            Box("Sill", w, new Vector3(0.08f, -0.78f, 0), new Vector3(0.2f, 0.05f, 1.85f), frameM, false);
+            float z = -hd + RoomD * (i + 0.5f) / WindowCount;
+            var w = Group("Window_" + i, p);
+            w.localPosition = new Vector3(-hw + 0.04f, wallMidY, z);
+            Box("Frame", w, Vector3.zero, new Vector3(0.06f, winH, winW), frameM, false);
+            Box("Glass", w, new Vector3(0.02f, 0, 0), new Vector3(0.04f, winH - 0.14f, winW - 0.14f), glassM, false);
+            Box("BarV", w, new Vector3(0.04f, 0, 0), new Vector3(0.04f, winH - 0.1f, 0.05f), frameM, false);
+            Box("BarH", w, new Vector3(0.04f, 0, 0), new Vector3(0.04f, 0.05f, winW - 0.1f), frameM, false);
+            Box("Sill", w, new Vector3(0.08f, -winH / 2f - 0.03f, 0), new Vector3(0.2f, 0.05f, winW + 0.15f), frameM, false);
         }
 
+        // porta: parede do fundo, perto do canto direito
         var door = Group("Door", p);
-        door.localPosition = new Vector3(3.5f, 1.05f, -hd + 0.05f);
+        door.localPosition = new Vector3(hw - 1.5f, 1.05f, -hd + 0.05f);
         Box("Leaf", door, Vector3.zero, new Vector3(1.0f, 2.1f, 0.08f), doorM, false);
         Box("Handle", door, new Vector3(-0.38f, -0.05f, 0.07f), new Vector3(0.05f, 0.05f, 0.1f), darkM, false);
         Box("Window", door, new Vector3(0, 0.5f, 0.045f), new Vector3(0.45f, 0.5f, 0.02f), glassM, false);
 
+        // relogio: parede do quadro, acima e a direita do quadro (olha para -z)
         var clock = Group("Clock", p);
-        clock.localPosition = new Vector3(0, 2.7f, -hd + 0.05f);
-        var face = Cyl("Face", clock, Vector3.zero, new Vector3(0.45f, 0.02f, 0.45f), whiteM, false);
+        clock.localPosition = new Vector3(BoardW / 2f + 1.6f, Mathf.Min(RoomH - 0.6f, BoardCenterY + BoardH / 2f + 0.3f), hd - 0.05f);
+        var face = Cyl("Face", clock, Vector3.zero, new Vector3(0.5f, 0.02f, 0.5f), whiteM, false);
         face.transform.localRotation = Quaternion.Euler(90, 0, 0);
-        Box("HandH", clock, new Vector3(0, 0.06f, 0.025f), new Vector3(0.02f, 0.14f, 0.01f), darkM, false);
-        Box("HandM", clock, new Vector3(0.09f, 0, 0.03f), new Vector3(0.2f, 0.015f, 0.01f), darkM, false);
+        Box("HandH", clock, new Vector3(0, 0.06f, -0.025f), new Vector3(0.02f, 0.14f, 0.01f), darkM, false);
+        Box("HandM", clock, new Vector3(0.09f, 0, -0.03f), new Vector3(0.2f, 0.015f, 0.01f), darkM, false);
 
+        // posteres: parede direita, distribuidos pela profundidade
         string[] symbols = { "+", "-", "×", "÷" };
         Color[] cols =
         {
             new Color(0.95f, 0.45f, 0.35f), new Color(0.30f, 0.60f, 0.95f),
             new Color(0.35f, 0.80f, 0.50f), new Color(0.95f, 0.75f, 0.25f)
         };
-        for (int i = 0; i < 4; i++)
+        for (int i = 0; i < PosterCount; i++)
         {
-            var m = Mat("Poster_" + i, cols[i], 0f, 0.2f);
-            float z = -3.3f + i * 2.2f;
-            Box("Poster_" + symbols[i], p, new Vector3(hw - 0.03f, 1.9f, z), new Vector3(0.04f, 1.1f, 1.1f), m, false);
-            Text("PosterSymbol", p, new Vector3(hw - 0.06f, 1.9f, z), new Vector3(0, -90, 0), symbols[i], 0.9f,
+            var m = Mat("Poster_" + (i % 4), cols[i % 4], 0f, 0.2f);
+            float z = -hd + RoomD * (i + 0.5f) / PosterCount;
+            Box("Poster_" + symbols[i % 4], p, new Vector3(hw - 0.03f, wallMidY, z), new Vector3(0.04f, 1.2f, 1.2f), m, false);
+            Text("PosterSymbol", p, new Vector3(hw - 0.06f, wallMidY, z), new Vector3(0, -90, 0), symbols[i % 4], 1.0f,
                 Color.white, TextAnchor.MiddleCenter);
         }
     }
@@ -217,34 +293,33 @@ public static class ClassroomBuilder
     static void BuildLights(Transform p)
     {
         var panelM = Mat("Ceiling_Light", Color.white, 0f, 0.2f, new Color(1f, 0.96f, 0.85f), 2.2f);
-        Vector3[] pos =
-        {
-            new Vector3(-2.5f, RoomH - 0.02f, -2f), new Vector3(2.5f, RoomH - 0.02f, -2f),
-            new Vector3(-2.5f, RoomH - 0.02f, 2f), new Vector3(2.5f, RoomH - 0.02f, 2f)
-        };
+        float cellW = RoomW / LightCols, cellD = RoomD / LightRows;
+        float range = Mathf.Max(cellW, cellD) * 1.5f;
         int i = 0;
-        foreach (var v in pos)
-        {
-            Box("LightPanel_" + i, p, v, new Vector3(1.4f, 0.04f, 0.5f), panelM, false);
-            var l = new GameObject("PointLight_" + i).AddComponent<Light>();
-            l.transform.SetParent(p, false);
-            l.transform.localPosition = v + Vector3.down * 0.4f;
-            l.type = LightType.Point;
-            l.color = new Color(1f, 0.95f, 0.85f);
-            l.intensity = 6f;
-            l.range = 9f;
-            l.shadows = LightShadows.None;
-            i++;
-        }
+        for (int c = 0; c < LightCols; c++)
+            for (int r = 0; r < LightRows; r++)
+            {
+                var v = new Vector3(-RoomW / 2f + cellW * (c + 0.5f), RoomH - 0.02f, -RoomD / 2f + cellD * (r + 0.5f));
+                Box("LightPanel_" + i, p, v, new Vector3(1.4f, 0.04f, 0.5f), panelM, false);
+                var l = new GameObject("PointLight_" + i).AddComponent<Light>();
+                l.transform.SetParent(p, false);
+                l.transform.localPosition = v + Vector3.down * 0.4f;
+                l.type = LightType.Point;
+                l.color = new Color(1f, 0.95f, 0.85f);
+                l.intensity = 6f;
+                l.range = range;
+                l.shadows = LightShadows.None;
+                i++;
+            }
 
-        var spot = new GameObject("BoardLight").AddComponent<Light>();
-        spot.transform.SetParent(p, false);
-        spot.transform.localPosition = new Vector3(0.4f, RoomH - 0.3f, 3.2f);
-        spot.type = LightType.Point;
-        spot.color = new Color(1f, 0.97f, 0.9f);
-        spot.intensity = 5f;
-        spot.range = 6f;
-        spot.shadows = LightShadows.None;
+        var boardLight = new GameObject("BoardLight").AddComponent<Light>();
+        boardLight.transform.SetParent(p, false);
+        boardLight.transform.localPosition = new Vector3(0.4f, RoomH - 0.3f, RoomD / 2f - 1.8f);
+        boardLight.type = LightType.Point;
+        boardLight.color = new Color(1f, 0.97f, 0.9f);
+        boardLight.intensity = 6f;
+        boardLight.range = 7f;
+        boardLight.shadows = LightShadows.None;
     }
 
     // ---------------------------------------------------------------- robo
@@ -260,7 +335,7 @@ public static class ClassroomBuilder
         var chalk = Mat("Chalk_White", new Color(0.95f, 0.95f, 0.92f), 0f, 0.05f);
 
         var robot = Group("RobotTeacher", parent);
-        robot.localPosition = new Vector3(-1.7f, 0, 4.4f); // de frente para o quadro (olha para +z)
+        robot.localPosition = new Vector3(-BoardW / 2f + 0.8f, 0, RoomD / 2f - 0.6f); // de frente para o quadro (+z)
         robot.localRotation = Quaternion.identity;
 
         foreach (float sx in new[] { -0.14f, 0.14f })
@@ -327,24 +402,29 @@ public static class ClassroomBuilder
         return pivot;
     }
 
-    // ---------------------------------------------------------------- esfera + lancador
+    // ---------------------------------------------------------------- alvos (prefabs)
 
-    static AnswerTarget BuildAnswerPrefab()
+    static PhysicsMaterial BuildBounceMaterial()
     {
-        var bounce = new PhysicsMaterial("SphereBounce")
+        string path = MatDir + "/SphereBounce.asset";
+        var bounce = AssetDatabase.LoadAssetAtPath<PhysicsMaterial>(path);
+        if (bounce == null)
         {
-            bounciness = 0.4f,
-            dynamicFriction = 0.5f,
-            staticFriction = 0.5f,
-            bounceCombine = PhysicsMaterialCombine.Maximum
-        };
-        string matPath = MatDir + "/SphereBounce.asset";
-        AssetDatabase.DeleteAsset(matPath);
-        AssetDatabase.CreateAsset(bounce, matPath);
+            bounce = new PhysicsMaterial("SphereBounce");
+            AssetDatabase.CreateAsset(bounce, path);
+        }
+        bounce.bounciness = 0.4f;
+        bounce.dynamicFriction = 0.5f;
+        bounce.staticFriction = 0.5f;
+        bounce.bounceCombine = PhysicsMaterialCombine.Maximum;
+        EditorUtility.SetDirty(bounce);
+        return bounce;
+    }
 
-        var ballM = Mat("AnswerBall", Color.white, 0.1f, 0.85f);
-
-        var go = new GameObject("AnswerTarget");
+    /// <summary>Raiz comum dos alvos: Rigidbody sem gravidade (o script aplica) + SphereCollider.</summary>
+    static GameObject TargetRoot(string name, PhysicsMaterial bounce)
+    {
+        var go = new GameObject(name);
         var rb = go.AddComponent<Rigidbody>();
         rb.mass = 0.3f;
         rb.useGravity = false;
@@ -356,71 +436,133 @@ public static class ClassroomBuilder
         var col = go.AddComponent<SphereCollider>();
         col.radius = 0.22f;
         col.sharedMaterial = bounce;
+        return go;
+    }
 
-        var visual = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-        visual.name = "Visual";
-        Object.DestroyImmediate(visual.GetComponent<Collider>());
-        visual.transform.SetParent(go.transform, false);
-        visual.transform.localScale = Vector3.one * 0.44f;
-        visual.GetComponent<Renderer>().sharedMaterial = ballM;
+    static AnswerTarget SavePrefab(GameObject go, string fileName)
+    {
+        var saved = PrefabUtility.SaveAsPrefabAsset(go, PrefabDir + "/" + fileName);
+        Object.DestroyImmediate(go);
+        if (saved == null) throw new Exception("Falha ao salvar prefab " + fileName);
+        return saved.GetComponent<AnswerTarget>();
+    }
+
+    static AnswerTarget BuildAnswerPrefab(PhysicsMaterial bounce)
+    {
+        var ballM = Mat("AnswerBall", Color.white, 0.1f, 0.85f);
+        var go = TargetRoot("AnswerTarget", bounce);
+
+        var visual = Sphere("Visual", go.transform, Vector3.zero, Vector3.one * 0.44f, ballM, false);
 
         var label = Text("Label", go.transform, Vector3.zero, Vector3.zero, "0", 0.2f, Color.white, TextAnchor.MiddleCenter);
         label.fontStyle = FontStyle.Bold;
 
         var target = go.AddComponent<AnswerTarget>();
         var so = new SerializedObject(target);
+        so.FindProperty("kind").enumValueIndex = (int)TargetKind.Answer;
         so.FindProperty("label").objectReferenceValue = label;
         so.FindProperty("bodyRenderer").objectReferenceValue = visual.GetComponent<Renderer>();
         so.ApplyModifiedPropertiesWithoutUndo();
 
-        string path = PrefabDir + "/AnswerTarget.prefab";
-        var saved = PrefabUtility.SaveAsPrefabAsset(go, path);
-        Object.DestroyImmediate(go);
-        return saved.GetComponent<AnswerTarget>();
+        return SavePrefab(go, "AnswerTarget.prefab");
     }
 
-    static void BuildSpawner(AnswerTarget prefab, TextMesh questionText, TextMesh scoreText, TextMesh feedbackText)
+    static AnswerTarget BuildGrenadePrefab(PhysicsMaterial bounce)
+    {
+        var bodyM = Mat("Grenade_Body", new Color(0.13f, 0.14f, 0.15f), 0.6f, 0.45f);
+        var metalM = Mat("Grenade_Metal", new Color(0.45f, 0.47f, 0.50f), 0.9f, 0.6f);
+        var redM = Mat("Grenade_Red", new Color(0.9f, 0.08f, 0.05f), 0f, 0.6f, new Color(1f, 0.1f, 0.05f), 3f);
+        var fxM = ParticleMat("Explosion_Particle", new Color(1f, 0.6f, 0.2f));
+
+        var go = TargetRoot("Grenade", bounce);
+        var t = go.transform;
+
+        var body = Sphere("Visual", t, Vector3.zero, Vector3.one * 0.44f, bodyM, false);
+        // faixa vermelha emissiva (disco fino que sobressai da esfera = anel)
+        Cyl("RedBand", t, Vector3.zero, new Vector3(0.452f, 0.012f, 0.452f), redM, false);
+        // tampa, pino e pavio no topo
+        Cyl("Cap", t, new Vector3(0, 0.215f, 0), new Vector3(0.12f, 0.035f, 0.12f), metalM, false);
+        var lever = Box("Lever", t, new Vector3(0.05f, 0.2f, 0), new Vector3(0.025f, 0.16f, 0.05f), metalM, false);
+        lever.transform.localRotation = Quaternion.Euler(0, 0, -20f);
+        var ring = Cyl("PinRing", t, new Vector3(-0.09f, 0.25f, 0), new Vector3(0.08f, 0.008f, 0.08f), metalM, false);
+        ring.transform.localRotation = Quaternion.Euler(0, 0, 90f);
+        Cyl("Fuse", t, new Vector3(0, 0.29f, 0), new Vector3(0.018f, 0.05f, 0.018f), bodyM, false);
+        Sphere("FuseTip", t, new Vector3(0, 0.345f, 0), Vector3.one * 0.045f, redM, false);
+
+        var target = go.AddComponent<AnswerTarget>();
+        var so = new SerializedObject(target);
+        so.FindProperty("kind").enumValueIndex = (int)TargetKind.Grenade;
+        so.FindProperty("label").objectReferenceValue = null;
+        so.FindProperty("bodyRenderer").objectReferenceValue = body.GetComponent<Renderer>();
+        so.FindProperty("explosionMaterial").objectReferenceValue = fxM;
+        so.ApplyModifiedPropertiesWithoutUndo();
+
+        return SavePrefab(go, "Grenade.prefab");
+    }
+
+    // ---------------------------------------------------------------- gameplay + UI
+
+    static void BuildGameplay(AnswerTarget answerPrefab, AnswerTarget grenadePrefab, TextMesh questionText,
+        TextMesh feedbackText, Camera cam)
     {
         var gameplay = new GameObject("Gameplay").transform;
 
-        var scoreGo = new GameObject("ScoreManager");
-        scoreGo.transform.SetParent(gameplay, false);
-        var score = scoreGo.AddComponent<ScoreManager>();
-        score.scoreText = scoreText;
+        var score = new GameObject("ScoreManager").AddComponent<ScoreManager>();
+        score.transform.SetParent(gameplay, false);
 
-        var sp = new GameObject("AnswerSpawner");
-        sp.transform.SetParent(gameplay, false);
-        sp.transform.position = new Vector3(0, 0.35f, 1.3f);
-        var spawner = sp.AddComponent<AnswerSpawner>();
-        spawner.prefab = prefab;
+        var spawner = new GameObject("AnswerSpawner").AddComponent<AnswerSpawner>();
+        spawner.transform.SetParent(gameplay, false);
+        // na frente da camera, no centro do corredor; apice abaixo do teto e dentro do campo de visao
+        spawner.transform.position = new Vector3(0, SpawnY, CamZ + SpawnDistance);
+        spawner.prefab = answerPrefab;
+        spawner.grenadePrefab = grenadePrefab;
         spawner.questionText = questionText;
         spawner.feedbackText = feedbackText;
         spawner.score = score;
+        spawner.apexHeight = Mathf.Min(2.6f, RoomH - SpawnY - 0.9f);
+        spawner.spread = Mathf.Min(3f, AisleW - 0.8f);
 
-        var bladeGo = new GameObject("Blade");
-        bladeGo.transform.SetParent(gameplay, false);
-        var blade = bladeGo.AddComponent<Blade>();
-        blade.cam = Camera.main;
+        var blade = new GameObject("Blade").AddComponent<Blade>();
+        blade.transform.SetParent(gameplay, false);
+        blade.cam = cam;
+        blade.enabled = false; // o GameFlow liga ao comecar
+
+        var ui = new GameObject("GameUI").AddComponent<GameUI>();
+
+        var flow = new GameObject("GameFlow").AddComponent<GameFlow>();
+        flow.transform.SetParent(gameplay, false);
+        flow.ui = ui;
+        flow.spawner = spawner;
+        flow.blade = blade;
+        flow.score = score;
     }
 
     // ---------------------------------------------------------------- camera / ambiente
 
-    static void SetupCameraAndAmbient()
+    static Camera BuildCameraAndAmbient()
     {
-        var cam = Camera.main;
-        if (cam != null)
-        {
-            cam.transform.position = new Vector3(0, 1.6f, -1.2f);
-            cam.transform.rotation = Quaternion.identity;
-            cam.fieldOfView = 60f;
-            cam.nearClipPlane = 0.05f;
-        }
+        var camGo = new GameObject("Main Camera");
+        camGo.tag = "MainCamera";
+        var cam = camGo.AddComponent<Camera>();
+        camGo.AddComponent<AudioListener>();
+        camGo.AddComponent<UniversalAdditionalCameraData>();
+        cam.transform.position = new Vector3(0, CamY, CamZ);
+        cam.transform.rotation = Quaternion.identity;
+        cam.fieldOfView = 60f;
+        cam.nearClipPlane = 0.05f;
+        cam.farClipPlane = 100f;
+        cam.clearFlags = CameraClearFlags.SolidColor;
+        cam.backgroundColor = new Color(0.1f, 0.1f, 0.12f);
+
+        var sun = new GameObject("Directional Light").AddComponent<Light>();
+        sun.type = LightType.Directional;
+        sun.transform.rotation = Quaternion.Euler(50f, -30f, 0f);
+        sun.intensity = 0.35f;
+        sun.shadows = LightShadows.None;
 
         RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
-        RenderSettings.ambientLight = new Color(0.50f, 0.50f, 0.55f);
-
-        foreach (var l in Object.FindObjectsByType<Light>(FindObjectsSortMode.None))
-            if (l.type == LightType.Directional) l.intensity = 0.5f;
+        RenderSettings.ambientLight = new Color(0.52f, 0.52f, 0.57f);
+        return cam;
     }
 
     // ---------------------------------------------------------------- helpers
@@ -497,6 +639,23 @@ public static class ClassroomBuilder
         }
         EditorUtility.SetDirty(m);
         mats[name] = m;
+        return m;
+    }
+
+    /// <summary>Material simples (opaco, sem textura) para as particulas da explosao.</summary>
+    static Material ParticleMat(string name, Color color)
+    {
+        string path = MatDir + "/" + name + ".mat";
+        var m = AssetDatabase.LoadAssetAtPath<Material>(path);
+        if (m == null)
+        {
+            Shader s = Shader.Find("Universal Render Pipeline/Particles/Unlit");
+            if (s == null) s = Shader.Find("Universal Render Pipeline/Unlit");
+            m = new Material(s);
+            AssetDatabase.CreateAsset(m, path);
+        }
+        if (m.HasProperty("_BaseColor")) m.SetColor("_BaseColor", color);
+        EditorUtility.SetDirty(m);
         return m;
     }
 

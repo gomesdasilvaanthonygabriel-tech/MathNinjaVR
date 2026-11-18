@@ -1,22 +1,25 @@
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
 /// <summary>
-/// Lamina do mouse: segurar o botao esquerdo e arrastar corta as esferas que o
-/// movimento atravessa (teste em espaco de tela, segmento do frame anterior ate o atual).
+/// Lamina do mouse: segurar o botao esquerdo e arrastar corta os alvos (esferas e
+/// granadas) que o movimento atravessa (teste em espaco de tela, segmento do frame
+/// anterior ate o atual). Desligada (enabled = false) fora da partida.
 /// </summary>
 public class Blade : MonoBehaviour
 {
     public Camera cam;
     [Tooltip("Movimento minimo (pixels) entre dois frames para contar como corte.")]
     public float minMovePixels = 4f;
-    [Tooltip("Folga extra (pixels) no raio de acerto da esfera.")]
+    [Tooltip("Folga extra (pixels) no raio de acerto do alvo.")]
     public float hitPadding = 6f;
     public float trailDistance = 1.5f;
 
     TrailRenderer trail;
     bool dragging;
     Vector2 last;
+    readonly List<AnswerTarget> hits = new List<AnswerTarget>();
 
     void Awake()
     {
@@ -35,6 +38,16 @@ public class Blade : MonoBehaviour
             new[] { new GradientAlphaKey(1f, 0f), new GradientAlphaKey(0f, 1f) });
         trail.colorGradient = grad;
         trail.emitting = false;
+    }
+
+    void OnDisable()
+    {
+        dragging = false;
+        if (trail != null)
+        {
+            trail.emitting = false;
+            trail.Clear();
+        }
     }
 
     void Update()
@@ -77,11 +90,11 @@ public class Blade : MonoBehaviour
 
     void CheckCuts(Vector2 a, Vector2 b)
     {
-        // copia: Slice remove da lista Active
-        var targets = AnswerTarget.Active.ToArray();
-        foreach (var t in targets)
+        // 1) coleta todos os alvos atravessados pelo segmento (antes de cortar qualquer um)
+        hits.Clear();
+        foreach (var t in AnswerTarget.Active)
         {
-            if (t == null) continue;
+            if (t == null || !t.IsAlive) continue;
             Vector3 center = cam.WorldToScreenPoint(t.transform.position);
             if (center.z <= 0f) continue;
 
@@ -89,12 +102,19 @@ public class Blade : MonoBehaviour
             float radiusPx = Mathf.Abs(edge.x - center.x) + hitPadding;
 
             if (DistanceToSegment(new Vector2(center.x, center.y), a, b) <= radiusPx)
-            {
-                Vector2 dirScreen = (b - a).normalized;
-                Vector3 dirWorld = cam.transform.right * dirScreen.x + cam.transform.up * dirScreen.y;
-                t.Slice(dirWorld);
-            }
+                hits.Add(t);
         }
+        if (hits.Count == 0) return;
+
+        // 2) corta cada um uma unica vez (Slice ignora repeticoes)
+        Vector2 dirScreen = (b - a).normalized;
+        Vector3 dirWorld = cam.transform.right * dirScreen.x + cam.transform.up * dirScreen.y;
+        foreach (var t in hits)
+        {
+            if (!enabled) break; // a partida pode ter acabado no meio deste corte
+            if (t != null && t.IsAlive) t.Slice(dirWorld);
+        }
+        hits.Clear();
     }
 
     static float DistanceToSegment(Vector2 p, Vector2 a, Vector2 b)

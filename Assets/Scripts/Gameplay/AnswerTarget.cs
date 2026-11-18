@@ -2,19 +2,31 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 
+public enum TargetKind { Answer, Grenade }
+
 /// <summary>
-/// Esfera com um numero (resposta). Fisica propria de gravidade (gravityScale) para
-/// uma queda realista porem com mais tempo no ar. O rotulo sempre olha para a camera.
-/// Ao descer perto do chao, o collider e desligado: a esfera atravessa o piso e some.
-/// Pode ser cortada pela lamina (Slice).
+/// Alvo cortavel: esfera com numero (resposta) ou granada. Fisica propria de gravidade
+/// (gravityScale) para mais tempo no ar. O rotulo sempre olha para a camera.
+/// Ao descer perto do chao, o collider e desligado: o alvo atravessa o piso e some.
+/// Pode ser cortado pela lamina (Slice).
 /// </summary>
 [RequireComponent(typeof(Rigidbody))]
 public class AnswerTarget : MonoBehaviour
 {
-    /// <summary>Esferas vivas e ainda nao cortadas (usado pela lamina).</summary>
+    /// <summary>Alvos vivos e ainda nao cortados (usado pela lamina).</summary>
     public static readonly List<AnswerTarget> Active = new List<AnswerTarget>();
-    /// <summary>Disparado quando uma esfera e cortada.</summary>
+    /// <summary>Disparado quando um alvo e cortado (uma unica vez por alvo).</summary>
     public static event Action<AnswerTarget> Sliced;
+
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+    static void ResetStatics()
+    {
+        Active.Clear();
+        Sliced = null;
+        block = null;
+    }
+
+    [SerializeField] TargetKind kind = TargetKind.Answer;
 
     public int value;
     public bool isCorrect;
@@ -22,26 +34,33 @@ public class AnswerTarget : MonoBehaviour
 
     [SerializeField] TextMesh label;
     [SerializeField] Renderer bodyRenderer;
+    [Tooltip("Material das particulas da explosao (granada).")]
+    [SerializeField] Material explosionMaterial;
 
-    [Tooltip("1 = gravidade normal. Menor que 1 deixa a esfera mais tempo no ar.")]
+    [Tooltip("1 = gravidade normal. Menor que 1 deixa o alvo mais tempo no ar.")]
     public float gravityScale = 0.7f;
     [Tooltip("Tempo maximo de vida (seguranca).")]
     public float lifetime = 6f;
     public float labelOffset = 0.27f;
 
     [Header("Atravessar o chao")]
-    [Tooltip("Altura (centro da esfera) abaixo da qual, descendo, ela deixa de colidir e atravessa o chao.")]
+    [Tooltip("Altura (centro) abaixo da qual, descendo, o alvo deixa de colidir e atravessa o chao.")]
     public float fallThroughHeight = 0.7f;
-    [Tooltip("Altura abaixo da qual a esfera e destruida (ja escondida pelo piso).")]
+    [Tooltip("Altura abaixo da qual o alvo e destruido (ja escondido pelo piso).")]
     public float destroyHeight = -0.8f;
 
     Rigidbody rb;
     Collider col;
     Camera cam;
-    Color color;
+    Color color = Color.white;
     float age;
     bool isSliced;
     static MaterialPropertyBlock block;
+
+    public TargetKind Kind => kind;
+    public bool IsGrenade => kind == TargetKind.Grenade;
+    /// <summary>Ainda pode ser cortado (nao cortado nem removido).</summary>
+    public bool IsAlive => !isSliced;
 
     void Awake()
     {
@@ -50,7 +69,11 @@ public class AnswerTarget : MonoBehaviour
         rb.useGravity = false; // gravidade aplicada manualmente em FixedUpdate
     }
 
-    void OnEnable() => Active.Add(this);
+    void OnEnable()
+    {
+        if (!isSliced && !Active.Contains(this)) Active.Add(this);
+    }
+
     void OnDisable() => Active.Remove(this);
 
     public void Setup(int number, bool correct, Color c)
@@ -74,13 +97,39 @@ public class AnswerTarget : MonoBehaviour
         rb.angularVelocity = angularVelocity;
     }
 
-    /// <summary>Corta a esfera: gera duas metades que se afastam e remove a esfera.</summary>
+    /// <summary>Remove o alvo sem conta-lo como corte (fim de onda/partida).</summary>
+    public void Despawn()
+    {
+        isSliced = true;
+        Active.Remove(this);
+        Destroy(gameObject);
+    }
+
+    /// <summary>Remove todos os alvos ativos sem contar cortes.</summary>
+    public static void DespawnAll()
+    {
+        var all = Active.ToArray();
+        foreach (var t in all)
+            if (t != null) t.Despawn();
+        Active.Clear();
+    }
+
+    /// <summary>Corta o alvo: esfera vira duas metades, granada explode. Conta uma unica vez.</summary>
     public void Slice(Vector3 cutDirectionWorld)
     {
         if (isSliced) return;
         isSliced = true;
         Active.Remove(this);
 
+        if (IsGrenade) ExplosionEffect.Spawn(transform.position, explosionMaterial);
+        else SpawnHalves(cutDirectionWorld);
+
+        Sliced?.Invoke(this);
+        Destroy(gameObject);
+    }
+
+    void SpawnHalves(Vector3 cutDirectionWorld)
+    {
         // metades se afastam perpendicularmente ao corte
         Vector3 side = Vector3.Cross(cutDirectionWorld.normalized, Vector3.forward);
         if (side.sqrMagnitude < 0.01f) side = Vector3.right;
@@ -109,9 +158,6 @@ public class AnswerTarget : MonoBehaviour
             hrb.angularVelocity = UnityEngine.Random.onUnitSphere * 3f;
             Destroy(half, 1.2f);
         }
-
-        Sliced?.Invoke(this);
-        Destroy(gameObject);
     }
 
     void FixedUpdate()
@@ -126,13 +172,14 @@ public class AnswerTarget : MonoBehaviour
     void Update()
     {
         age += Time.deltaTime;
-        if (age > lifetime || transform.position.y < destroyHeight) Destroy(gameObject);
+        if (age > lifetime || transform.position.y < destroyHeight) Despawn();
     }
 
     void LateUpdate()
     {
+        if (label == null) return;
         if (cam == null) cam = Camera.main;
-        if (cam == null || label == null) return;
+        if (cam == null) return;
         Vector3 toCam = (cam.transform.position - transform.position).normalized;
         label.transform.position = transform.position + toCam * labelOffset;
         label.transform.rotation = cam.transform.rotation;

@@ -3,15 +3,18 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// Controla a rodada: sorteia uma pergunta e lanca as esferas para cima com giro leve.
-/// A MESMA pergunta continua ate o jogador cortar a esfera correta. Cortes errados
-/// eliminam aquela esfera; se todas as esferas caem, as restantes sao relancadas.
-/// A posicao do objeto e o ponto central de onde as esferas saem.
+/// Controla as rodadas de uma partida: sorteia uma pergunta e lanca as esferas para cima.
+/// A MESMA pergunta continua ate o acerto ou ate esgotar as chances (regra no MatchStats).
+/// Cortes errados eliminam aquela esfera; se todas caem, as restantes sao relancadas.
+/// A cada 3 ou 4 ondas, uma granada sobe junto com as esferas.
+/// So roda entre StartMatch() e StopMatch() (chamados pelo GameFlow).
+/// A posicao do objeto e o ponto central de onde os alvos saem.
 /// </summary>
 public class AnswerSpawner : MonoBehaviour
 {
     [Header("Referencias")]
     public AnswerTarget prefab;
+    public AnswerTarget grenadePrefab;
     public ScoreManager score;
     [Tooltip("Texto do quadro negro onde a pergunta aparece.")]
     public TextMesh questionText;
@@ -19,13 +22,18 @@ public class AnswerSpawner : MonoBehaviour
     public TextMesh feedbackText;
 
     [Header("Lancamento")]
-    [Tooltip("Altura maxima (em metros) que a esfera sobe acima do ponto de saida.")]
-    public float apexHeight = 2.7f;
-    [Tooltip("Largura da faixa horizontal onde as esferas saem.")]
+    [Tooltip("Altura maxima (em metros) que o alvo sobe acima do ponto de saida.")]
+    public float apexHeight = 2.6f;
+    [Tooltip("Largura da faixa horizontal onde os alvos saem.")]
     public float spread = 3f;
     public float jitterX = 0.1f;
-    [Tooltip("Quanto a esfera se inclina em direcao ao centro durante o voo.")]
+    [Tooltip("Quanto o alvo se inclina em direcao ao centro durante o voo.")]
     public float driftToCenter = 0.15f;
+
+    [Header("Granada")]
+    [Tooltip("Intervalo minimo/maximo (em ondas) entre granadas; sorteado a cada granada.")]
+    public int grenadeEveryMin = 3;
+    public int grenadeEveryMax = 4;
 
     [Header("Fisica")]
     [Range(0.2f, 1.5f)] public float gravityScale = 0.7f;
@@ -51,33 +59,73 @@ public class AnswerSpawner : MonoBehaviour
 
     readonly List<AnswerTarget> current = new List<AnswerTarget>();
     readonly List<int> remaining = new List<int>(); // opcoes ainda nao cortadas
+    bool running;
     bool solved;
-    bool cutInWave;
+    int wavesUntilGrenade;
 
     public Question CurrentQuestion { get; private set; }
+    public bool IsRunning => running;
 
     void OnEnable() => AnswerTarget.Sliced += HandleSliced;
     void OnDisable() => AnswerTarget.Sliced -= HandleSliced;
 
-    IEnumerator Start()
+    void OnDestroy()
+    {
+        AnswerTarget.Sliced -= HandleSliced;
+        running = false;
+    }
+
+    // ---------------------------------------------------------------- controle
+
+    public void StartMatch()
+    {
+        StopAllCoroutines();
+        ClearWave();
+        running = true;
+        solved = false;
+        CurrentQuestion = null;
+        wavesUntilGrenade = NextGrenadeGap();
+        SetQuestion("");
+        SetFeedback("Prepare-se!");
+        StartCoroutine(MatchLoop());
+    }
+
+    public void StopMatch()
+    {
+        running = false;
+        StopAllCoroutines();
+        ClearWave();
+    }
+
+    /// <summary>Texto do quadro fora da partida (menu / fim).</summary>
+    public void ShowBoardMessage(string question, string feedback)
+    {
+        SetQuestion(question);
+        SetFeedback(feedback);
+    }
+
+    IEnumerator MatchLoop()
     {
         yield return new WaitForSeconds(firstDelay);
-        while (true)
+        while (running)
         {
             NewQuestion();
-            while (!solved)
+            while (running && !solved)
             {
                 LaunchWave();
-                // espera todas as esferas da onda sumirem (cortadas ou caidas)
-                yield return new WaitUntil(() => solved || AllGone());
+                // espera todos os alvos da onda sumirem (cortados ou caidos) ou o acerto
+                yield return new WaitUntil(() => !running || solved || AllGone());
+                if (!running) yield break;
                 if (solved) break;
 
-                // onda inteira sem nenhum corte conta como uma tentativa
-                if (!cutInWave && score != null) score.RegisterMiss();
+                // onda sem acerto: nao muda pontos, so relanca as restantes
                 SetFeedback("Tente de novo!");
                 yield return new WaitForSeconds(relaunchDelay);
             }
+            if (!running) yield break;
 
+            // cortes do mesmo frame do acerto ja foram contados; agora limpa o resto da onda
+            ClearWave();
             yield return new WaitForSeconds(nextQuestionDelay);
         }
     }
@@ -88,53 +136,95 @@ public class AnswerSpawner : MonoBehaviour
         CurrentQuestion = QuestionGenerator.Generate(GameSettings.operation, GameSettings.difficulty);
         remaining.Clear();
         remaining.AddRange(CurrentQuestion.options);
-        if (score != null) score.ResetAttempts();
-        if (questionText != null) questionText.text = CurrentQuestion.text;
+        if (score != null) score.StartQuestion();
+        SetQuestion(CurrentQuestion.text);
         SetFeedback("");
     }
 
     bool AllGone()
     {
-        current.RemoveAll(t => t == null);
+        current.RemoveAll(t => t == null || !t.IsAlive);
         return current.Count == 0;
     }
 
+    int NextGrenadeGap()
+    {
+        int lo = Mathf.Max(1, grenadeEveryMin);
+        int hi = Mathf.Max(lo, grenadeEveryMax);
+        return Random.Range(lo, hi + 1);
+    }
+
+    // ---------------------------------------------------------------- cortes
+
     void HandleSliced(AnswerTarget t)
     {
-        if (solved) return;
-        cutInWave = true;
+        if (!running || t == null || score == null || CurrentQuestion == null) return;
+
+        if (t.IsGrenade)
+        {
+            if (score.RegisterGrenade() == MatchStats.CutResult.Grenade && running)
+                SetFeedback("BOOM! Granada!");
+            return;
+        }
+
+        if (solved) return; // a rodada so resolve uma vez (acerto ou ultima chance perdida)
 
         if (t.isCorrect)
         {
+            if (score.RegisterCorrect() != MatchStats.CutResult.Solved) return;
             solved = true;
-            int pts = score != null ? score.RegisterCorrect() : 0;
-            if (questionText != null) questionText.text = CurrentQuestion.text.Replace("?", CurrentQuestion.correctAnswer.ToString());
-            SetFeedback("Acertou! +" + pts + (pts == 1 ? " ponto" : " pontos"));
-            ClearWave(); // remove as outras esferas
+            if (!running) return;
+            ShowAnswer();
+            SetFeedback("Acertou! +" + score.Stats.LastPoints);
         }
         else
         {
             remaining.Remove(t.value);
-            if (score != null) score.RegisterWrong();
-            SetFeedback("Errou! Continue tentando");
+            var r = score.RegisterWrong();
+            if (r == MatchStats.CutResult.WrongQuestionLost)
+            {
+                solved = true;
+                if (!running) return;
+                ShowAnswer();
+                SetFeedback("Errou! Sem chances nesta conta");
+            }
+            else if (r == MatchStats.CutResult.WrongTryAgain && running)
+            {
+                SetFeedback("Errou! Proximo acerto vale +" + score.Stats.PointsForCurrentChance);
+            }
         }
     }
 
-    /// <summary>Lanca as opcoes restantes da pergunta atual.</summary>
-    [ContextMenu("Lancar agora")]
-    public void LaunchWave()
+    void ShowAnswer()
+    {
+        SetQuestion(CurrentQuestion.text.Replace("?", CurrentQuestion.correctAnswer.ToString()));
+    }
+
+    // ---------------------------------------------------------------- lancamento
+
+    /// <summary>Lanca as opcoes restantes da pergunta atual (e, as vezes, uma granada).</summary>
+    void LaunchWave()
     {
         if (prefab == null) { Debug.LogWarning("AnswerSpawner: prefab nao definido."); return; }
-        if (CurrentQuestion == null) NewQuestion();
+        if (CurrentQuestion == null) return;
 
         ClearWave();
-        cutInWave = false;
 
-        var values = new List<int>(remaining);
-        Shuffle(values);
+        // null = granada
+        var slots = new List<int?>();
+        foreach (int v in remaining) slots.Add(v);
+        Shuffle(slots);
 
-        int n = values.Count;
+        wavesUntilGrenade--;
+        if (wavesUntilGrenade <= 0)
+        {
+            wavesUntilGrenade = NextGrenadeGap();
+            if (grenadePrefab != null) slots.Insert(Random.Range(0, slots.Count + 1), null);
+        }
+
+        int n = slots.Count;
         float g = Mathf.Abs(Physics.gravity.y) * gravityScale;
+        int colorIdx = 0;
 
         for (int i = 0; i < n; i++)
         {
@@ -142,10 +232,18 @@ public class AnswerSpawner : MonoBehaviour
             float x = Mathf.Lerp(-spread * 0.5f, spread * 0.5f, t) + Random.Range(-jitterX, jitterX);
             Vector3 pos = transform.position + new Vector3(x, 0f, Random.Range(-0.15f, 0.15f));
 
-            AnswerTarget target = Instantiate(prefab, pos, Random.rotation, transform);
+            AnswerTarget target;
+            if (slots[i].HasValue)
+            {
+                target = Instantiate(prefab, pos, Random.rotation, transform);
+                int value = slots[i].Value;
+                target.Setup(value, value == CurrentQuestion.correctAnswer, palette[colorIdx++ % palette.Length]);
+            }
+            else
+            {
+                target = Instantiate(grenadePrefab, pos, Quaternion.Euler(0f, Random.Range(0f, 360f), Random.Range(-20f, 20f)), transform);
+            }
             target.gravityScale = gravityScale;
-            int value = values[i];
-            target.Setup(value, value == CurrentQuestion.correctAnswer, palette[i % palette.Length]);
 
             // v = sqrt(2 * g * h) para atingir a altura h
             float h = apexHeight * Random.Range(0.88f, 1f);
@@ -155,8 +253,8 @@ public class AnswerSpawner : MonoBehaviour
                 vy,
                 Random.Range(-0.1f, 0.1f));
 
-            // giro leve em uma direcao qualquer
             Vector3 spin = Random.onUnitSphere * Random.Range(minSpin, maxSpin);
+            if (target.IsGrenade) spin *= 0.5f;
 
             target.Launch(velocity, spin);
             current.Add(target);
@@ -166,8 +264,13 @@ public class AnswerSpawner : MonoBehaviour
     public void ClearWave()
     {
         foreach (var t in current)
-            if (t != null) Destroy(t.gameObject);
+            if (t != null && t.IsAlive) t.Despawn();
         current.Clear();
+    }
+
+    void SetQuestion(string msg)
+    {
+        if (questionText != null) questionText.text = msg;
     }
 
     void SetFeedback(string msg)

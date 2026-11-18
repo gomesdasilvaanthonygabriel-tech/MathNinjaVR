@@ -1,53 +1,73 @@
+using System;
 using UnityEngine;
 
 /// <summary>
-/// Pontuacao: acerto de 1a tentativa = 5 pontos, 2a = 3 pontos, 3a ou 4a = 1 ponto.
-/// "Tentativa" = cada corte errado soma 1; uma onda inteira sem nenhum corte tambem soma 1.
+/// Ponte entre a cena e o MatchStats: guarda os valores de pontuacao (editaveis no
+/// Inspector), cria um MatchStats novo a cada partida e avisa quando algo muda/acaba.
 /// </summary>
 public class ScoreManager : MonoBehaviour
 {
-    public int firstTryPoints = 5;
-    public int secondTryPoints = 3;
-    public int laterTryPoints = 1;
+    [Header("Pontuacao por chance")]
+    [Tooltip("Acerto na 1a chance (4 esferas).")]
+    [SerializeField] int firstChancePoints = 5;
+    [Tooltip("Acerto na 2a chance (3 esferas).")]
+    [SerializeField] int secondChancePoints = 3;
+    [Tooltip("Acerto na 3a chance (2 esferas).")]
+    [SerializeField] int thirdChancePoints = 1;
+    [SerializeField] int grenadePenalty = 5;
 
-    [Header("Textos no quadro")]
-    public TextMesh scoreText;
+    [Header("Fim de partida")]
+    [SerializeField] int targetScore = 20;
+    [SerializeField] int maxGrenades = 3;
 
-    public int Score { get; private set; }
-    /// <summary>Tentativas erradas na pergunta atual (0 = ainda acertaria de primeira).</summary>
-    public int Attempts { get; private set; }
-    public int CorrectCount { get; private set; }
+    /// <summary>Disparado sempre que pontos/contadores/chance mudam.</summary>
+    public event Action Changed;
+    /// <summary>Disparado uma unica vez por partida. true = vitoria.</summary>
+    public event Action<bool> MatchEnded;
 
-    void Start() => Refresh();
+    public MatchStats Stats { get; private set; }
 
-    public void ResetAttempts() => Attempts = 0;
+    bool endRaised;
 
-    public void RegisterWrong() => Attempts++;
-
-    public void RegisterMiss() => Attempts++;
-
-    /// <summary>Soma os pontos conforme a tentativa e devolve quantos foram ganhos.</summary>
-    public int RegisterCorrect()
+    void Awake()
     {
-        int points = Attempts == 0 ? firstTryPoints
-                   : Attempts == 1 ? secondTryPoints
-                   : laterTryPoints;
-        Score += points;
-        CorrectCount++;
-        Refresh();
-        return points;
+        if (Stats == null) CreateStats(); // sem evento: os ouvintes podem nao estar prontos
     }
 
-    public void ResetScore()
+    public void ResetMatch()
     {
-        Score = 0;
-        CorrectCount = 0;
-        Attempts = 0;
-        Refresh();
+        CreateStats();
+        Changed?.Invoke();
     }
 
-    void Refresh()
+    void CreateStats()
     {
-        if (scoreText != null) scoreText.text = "Pontos: " + Score;
+        Stats = new MatchStats(firstChancePoints, secondChancePoints, thirdChancePoints,
+            grenadePenalty, targetScore, maxGrenades);
+        endRaised = false;
+    }
+
+    public bool StartQuestion()
+    {
+        if (Stats == null) CreateStats();
+        bool ok = Stats.StartQuestion();
+        if (ok) Changed?.Invoke();
+        return ok;
+    }
+
+    public MatchStats.CutResult RegisterCorrect() => Apply(Stats.RegisterCorrect());
+    public MatchStats.CutResult RegisterWrong() => Apply(Stats.RegisterWrong());
+    public MatchStats.CutResult RegisterGrenade() => Apply(Stats.RegisterGrenade());
+
+    MatchStats.CutResult Apply(MatchStats.CutResult result)
+    {
+        if (result == MatchStats.CutResult.Ignored) return result;
+        Changed?.Invoke();
+        if (Stats.IsOver && !endRaised)
+        {
+            endRaised = true;
+            MatchEnded?.Invoke(Stats.Won);
+        }
+        return result;
     }
 }
