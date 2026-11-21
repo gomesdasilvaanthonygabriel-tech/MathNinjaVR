@@ -56,7 +56,12 @@ Desktop.ini
 
 # Servidor MCP local (dependencias npm)
 unity-mcp/node_modules/
+blender-mcp/node_modules/
 
 # Capas de referencia (ficam so no disco)
 Arte/Capas/
 
+
+# Cenas de recuperacao da Unity (geradas apos crash)
+/[Aa]ssets/_Recovery/
+/[Aa]ssets/_Recovery.meta

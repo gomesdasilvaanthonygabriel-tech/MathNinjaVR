@@ -1,0 +1,11 @@
+{
+  "name": "mathninja-blender-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "server.mjs",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.12.1",
+    "zod": "3.25.76"
+  }
+}

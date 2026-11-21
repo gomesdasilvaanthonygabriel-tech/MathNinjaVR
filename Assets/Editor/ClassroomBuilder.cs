@@ -11,6 +11,11 @@ using Object = UnityEngine.Object;
 /// Monta a cena Game do zero: sala de aula 3D, professor robo, quadro, prefabs de esfera e
 /// granada, gameplay (pontuacao, lancador, lamina, fluxo) e UI.
 /// Menu: MathNinja/Build Classroom. Batch: -executeMethod ClassroomBuilder.BuildFromCommandLine
+///
+/// DESATIVADO (2026-11-21): a sala antiga foi substituida pelo ambiente modelado no Blender
+/// (Assets/Art/Ambiente/MathNinja-Ambiente.fbx). NAO rode este builder: ele recria Game.unity do zero
+/// com a sala antiga e apagaria o ambiente novo. O item de menu foi removido e Build/BuildFromCommandLine
+/// so avisam e saem, a menos que LegacyBuilderEnabled seja ligado de proposito.
 /// </summary>
 public static class ClassroomBuilder
 {
@@ -48,7 +53,10 @@ public static class ClassroomBuilder
     static readonly Dictionary<string, Material> mats = new Dictionary<string, Material>();
     static Font font;
 
-    [MenuItem("MathNinja/Build Classroom")]
+    /// <summary>Ligue so se quiser MESMO recriar a sala antiga (substitui a Game.unity inteira).</summary>
+    static readonly bool LegacyBuilderEnabled = false;
+
+    // [MenuItem("MathNinja/Build Classroom")]  // desativado: ver comentario da classe
     public static void Build()
     {
         if (!Application.isBatchMode && !EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()) return;
@@ -73,6 +81,11 @@ public static class ClassroomBuilder
 
     static void BuildScene()
     {
+        if (!LegacyBuilderEnabled)
+        {
+            Debug.LogWarning("[MathNinja] ClassroomBuilder desativado: Game.unity usa o ambiente do Blender (Assets/Art/Ambiente). Nada foi alterado.");
+            return;
+        }
         mats.Clear();
         font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
         EnsureFolder(MatDir);
