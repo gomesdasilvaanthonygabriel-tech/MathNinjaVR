@@ -8,6 +8,9 @@ public class RobotTeacher : MonoBehaviour
     public Transform rightArm;
     public Transform leftArm;
     public Renderer antennaBulb;
+    [Tooltip("Submaterial do antennaBulb que pulsa (-1 = renderer inteiro, como no robo antigo)")]
+    public int bulbMaterialIndex = -1;
+    public Color bulbColor = new Color(1f, 0.35f, 0.2f);
 
     Vector3 bodyPos;
     Quaternion headRot, rightRot, leftRot;
@@ -19,6 +22,7 @@ public class RobotTeacher : MonoBehaviour
         if (head) headRot = head.localRotation;
         if (rightArm) rightRot = rightArm.localRotation;
         if (leftArm) leftRot = leftArm.localRotation;
+        if (antennaBulb && bulbMaterialIndex >= antennaBulb.sharedMaterials.Length) bulbMaterialIndex = -1;
         block = new MaterialPropertyBlock();
     }
 
@@ -43,9 +47,10 @@ public class RobotTeacher : MonoBehaviour
         {
             float pulse = 1.5f + Mathf.Sin(t * 3f);
             if (block == null) block = new MaterialPropertyBlock();
-            antennaBulb.GetPropertyBlock(block);
-            block.SetColor("_EmissionColor", new Color(1f, 0.35f, 0.2f) * pulse);
-            antennaBulb.SetPropertyBlock(block);
+            int idx = bulbMaterialIndex;
+            if (idx >= 0) antennaBulb.GetPropertyBlock(block, idx); else antennaBulb.GetPropertyBlock(block);
+            block.SetColor("_EmissionColor", bulbColor * pulse);
+            if (idx >= 0) antennaBulb.SetPropertyBlock(block, idx); else antennaBulb.SetPropertyBlock(block);
         }
     }
 }
