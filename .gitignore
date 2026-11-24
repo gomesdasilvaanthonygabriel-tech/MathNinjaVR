@@ -65,3 +65,6 @@ Arte/Capas/
 # Cenas de recuperacao da Unity (geradas apos crash)
 /[Aa]ssets/_Recovery/
 /[Aa]ssets/_Recovery.meta
+
+# Capturas de tela geradas pelas ferramentas do Editor
+/Previews/
