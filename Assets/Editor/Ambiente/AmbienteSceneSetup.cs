@@ -15,7 +15,8 @@ using UnityEngine.Rendering;
 public static class AmbienteSceneSetup
 {
     const string ScenePath = "Assets/Scenes/Game.unity";
-    const string PreviewDir = @"C:\Users\cliente\Projetos\MathNinja\Backups\previews";
+    // capturas ficam em <projeto>/Previews (fora do Git)
+    static string PreviewDir => Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Previews");
 
     // sala: 16 x 14 x 4,2 m, centro do piso na origem, quadro na parede +Z
     const float W = 16f, D = 14f, H = 4.2f, T = 0.2f;
